@@ -1,0 +1,3 @@
+yfinance==0.2.18
+mplfinance==0.12.10b0
+pandas==1.3.3
