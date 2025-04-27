@@ -1,98 +1,86 @@
-from ib_insync import IB, Option, util
-from strategy.the_strat import classify_candles, detect_strat_patterns
-from data.data_processor import add_moving_averages
+from ib_insync import IB, Stock, util
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from objects.Candlestick import Candlestick
 import pandas as pd
-import yfinance as yf
-from utils.logger import logger
+import logging
+
+# Configure logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 ib = IB()
+ib.connect('127.0.0.1', 4002, clientId=1)  # Make sure IB Gateway is running!
 
-def fetch_options_chain(symbol, expiration):
-    """
-    Fetches the options chain synchronously.
-    """
-    contracts = ib.reqContractDetails(Option(symbol, expiration, 'C', None))
-    return contracts
+def fetch_historical_data(symbol: str, duration: str = '2 D', bar_size: str = '1 day'):
+    try:
+        # Clean up duration to match IBKR's required format
+        duration = duration.upper().replace('D', ' D').replace('W', ' W').replace('M', ' M').replace('Y', ' Y')
+        duration = ' '.join(duration.split())  # Remove any extra spaces
 
-def fetch_historical_data(symbol, start_date, end_date, interval='1d'):
-    """
-    Fetches historical stock data using Yahoo Finance.
-    """
-    data = yf.download(symbol, start=start_date, end=end_date, interval=interval)
-    return data
+        # Create a Stock contract
+        contract = Stock(symbol, 'SMART', 'USD')
 
-def filter_options_chain(contracts, delta_range=(0.2, 0.4)):
-    """
-    Filters options contracts based on delta and liquidity criteria.
-    """
-    options_data = pd.DataFrame([{
-        'contract': c.contract,
-        'delta': c.delta,
-        'volume': c.volume,
-        'iv': c.iv,
-        'bidAskSpread': c.bidAskSpread()
-    } for c in contracts if c.delta and c.volume])
+        # Request historical data
+        bars = ib.reqHistoricalData(
+            contract,
+            endDateTime='',
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow='TRADES',
+            useRTH=True,
+            formatDate=1
+        )
 
-    filtered = options_data[
-        (options_data['delta'].abs().between(*delta_range)) &
-        (options_data['volume'] > 1000) &
-        (options_data['bidAskSpread'] <= 0.10)
-    ]
-    return filtered.iloc[0]['contract'] if not filtered.empty else None
+        # Convert to DataFrame
+        df = util.df(bars)
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching data for {symbol}: {e}")
+        return pd.DataFrame()
 
-def trade(symbol, start_date, end_date, expiration):
-    """
-    Executes trades based on candlestick patterns and options data.
-    """
-    logger.info("trade called")
-    ib.connect('127.0.0.1', 4002, clientId=1)
 
-    logger.info("connected")
+def create_candlesticks(df: pd.DataFrame):
+    candles = []
+    for _, row in df.iterrows():
+        candle = Candlestick(
+            timestamp=row['date'],
+            open=row['open'],
+            high=row['high'],
+            low=row['low'],
+            close=row['close'],
+            volume=row.get('volume', 0.0),
+        )
 
-    # Fetch historical stock data
-    historical_data = fetch_historical_data(symbol, start_date, end_date, '1d')
-    options_chain = fetch_options_chain(symbol, expiration)
+        # Set candleType based on open and close
+        
+        candle.candleType = 0  # doji / indecision
 
-    # Process stock data
-    historical_data = add_moving_averages(historical_data)
-    historical_data = classify_candles(historical_data)
-    historical_data = detect_strat_patterns(historical_data)
+        candles.append(candle)
+    return candles
 
-    # Filter and select options contract
-    selected_option = filter_options_chain(options_chain)
-    if selected_option:
-        logger.info(f"Selected Option: {selected_option.symbol}")
-    else:
-        logger.warning("No suitable options contract found.")
-        return
 
-    # Analyze candlestick patterns and execute trades
-    for i in range(len(historical_data)):
-        pattern = historical_data.iloc[i]['Pattern']
-        timestamp = historical_data.index[i]
-        decision_reason = ""
+def populate_candlestick_data(tickers, duration='2 D', bar_size='1 day'):
+    candle_map = defaultdict(lambda: deque(maxlen=4))
 
-        if pattern == '2-1-2 Bullish':
-            decision_reason = "Detected a bullish continuation pattern with confirmation from moving averages."
-            logger.info(f"{timestamp}: {decision_reason}. Decision: Buy {symbol}.")
-            ib.placeOrder(selected_option, ib.MarketOrder('BUY', 1))
+    for symbol in tickers:
+        logger.info(f"Fetching data for {symbol}")
+        df = fetch_historical_data(symbol, duration=duration, bar_size=bar_size)
 
-        elif pattern == '2-1-2 Bearish':
-            decision_reason = "Detected a bearish continuation pattern with confirmation from moving averages."
-            logger.info(f"{timestamp}: {decision_reason}. Decision: Sell {symbol}.")
-            ib.placeOrder(selected_option, ib.MarketOrder('SELL', 1))
+        if df.empty:
+            logger.warning(f"No data for {symbol}")
+            continue
 
-        else:
-            decision_reason = "No significant pattern detected or conditions did not align with strategy criteria."
-            logger.info(f"{timestamp}: {decision_reason}. Decision: No action taken.")
+        candlesticks = create_candlesticks(df)
 
-    logger.info("Trading session completed.")
+        for candle in candlesticks[-4:]:
+            candle_map[symbol].append(candle)
 
-# If you want to run the trade function
-if __name__ == "__main__":
-    symbol = "AAPL"
-    start_date = "2025-03-01"
-    end_date = "2025-03-25"
-    expiration = "2025-04-01"
+        logger.info(f"Added {len(candle_map[symbol])} candles for {symbol}")
 
-    trade(symbol, start_date, end_date, expiration)
+    return candle_map
+
+# Example usage:
+# tickers = ['AAPL', 'MSFT']
+# candles = populate_candlestick_data(tickers)
+# ib.disconnect()
