@@ -34,13 +34,16 @@ class PatternDefiner:
                     print(f"Pattern detected for {ticker}: 2-Up Continuation Pattern at candle {i}")
                 elif prev_candle_type == 5 and middle_candle_type == 5 and last_candle_type == 5:  # 2-Down Candles (Reversal)
                     candles[i].candlePattern = "2-Down Continuation Pattern"
-                    print(f"Pattern detected for {ticker}: 2-Down Continuation Pattern at candle {i}")
+                    print(f"Pattern detected for {ticker}: 2-Down Cont Pattern at candle {i}")
                 elif prev_candle_type == 2 and middle_candle_type == 1 and last_candle_type == 4:  # Directional bar to 2-Up
                     candles[i].candlePattern = "Directional Bar to 2-Up"
                     print(f"Pattern detected for {ticker}: Directional Bar to 2-Up at candle {i}")
                 elif prev_candle_type == 3 and middle_candle_type == 1 and last_candle_type == 5:  # Outside bar to 2-Down
                     candles[i].candlePattern = "Outside Bar to 2-Down"
                     print(f"Pattern detected for {ticker}: Outside Bar to 2-Down at candle {i}")
+                elif prev_candle_type == 3 and middle_candle_type == 1 and last_candle_type == 4:  # Outside bar to 2-Down
+                    candles[i].candlePattern = "Outside Bar to 2-Up"
+                    print(f"Pattern detected for {ticker}: Outside Bar to 2-Up at candle {i}")
                 elif prev_candle_type == 1 and middle_candle_type == 1 and last_candle_type == 1:  # Inside bars pattern
                     candles[i].candlePattern = "Inside Bars Pattern"
                     print(f"Pattern detected for {ticker}: Inside Bars Pattern at candle {i}")
