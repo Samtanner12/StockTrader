@@ -1,145 +1,186 @@
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
-from ibapi.ticktype import TickType
-import threading
-import time
-from typing import Deque
-from objects.Candlestick import Candlestick
+from ibapi.order import Order
+from datetime import datetime
+from ib_insync import IB, Stock, Option, util
 
+# Constants
+RISK_PER_TRADE = 100
 
-class buyBot(EWrapper, EClient):
-    def __init__(self):
-        EClient.__init__(self, self)
-        self.implied_volatility = None
-        self.option_order_response = None
-
-    def tickOptionComputation(self, reqId: int, tickType: TickType, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
-        """This function processes the implied volatility from market data"""
-        if tickType == 10:  # Implied Volatility tick type
-            self.implied_volatility = impliedVol
-            print(f"Implied Volatility: {self.implied_volatility}")
-
-    def place_option_order(self, ticker: str, strike: float, stop_loss: float, take_profit: float):
-        """Place the option order through IBKR"""
-        contract = Contract()
-        contract.symbol = ticker
-        contract.secType = "OPT"
-        contract.exchange = "SMART"
-        contract.currency = "USD"
-        contract.strike = strike
-        contract.right = "C"  # Call option
-        contract.lastTradeDateOrContractMonth = "20230519"  # Example expiration date
-        contract.multiplier = "100"
-        
-        order = Order()
-        order.action = "BUY"
-        order.totalQuantity = 1
-        order.orderType = "MKT"
-        
-        # For this example, we'll place a market order (no limit/stop)
-        self.placeOrder(1, contract, order)
-        print("Placing option order...")
-
-    def get_implied_volatility(self, ticker: str, expiry: str, strike: float, right: str):
-        """Fetch the implied volatility for a specific option using IBKR API."""
-        contract = Contract()
-        contract.symbol = ticker
-        contract.secType = "OPT"
-        contract.exchange = "SMART"
-        contract.currency = "USD"
-        contract.lastTradeDateOrContractMonth = expiry
-        contract.strike = strike
-        contract.right = right
-        contract.multiplier = "100"
-        
-        # Request market data
-        self.reqMktData(1, contract, "", False, False, [])
-        time.sleep(2)  # Wait for the response to be processed
-        
-        return self.implied_volatility
-
+# Logging
 def log(level: str, message: str):
-    """Simple logger using print with timestamp and level."""
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{level}] {message}")
 
-# Function to determine the strike distance based on IV
+
+class IBKRWrapper:
+    def __init__(self, host='127.0.0.1', port=4002, client_id=0):
+        self.ib = IB()
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+
+    def connect(self):
+        if not self.ib.isConnected():
+            self.ib.connect(self.host, self.port, self.client_id)
+
+    def disconnect(self):
+        if self.ib.isConnected():
+            self.ib.disconnect()
+
+    def get_implied_volatility(self, ticker: str, expiry: str, strike: float, right: str):
+        self.connect()
+        option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
+        self.ib.qualifyContracts(option)
+
+        # Request Greeks data using genericTickList
+        ticker_data = self.ib.reqMktData(option, genericTickList='106', snapshot=False, regulatorySnapshot=False)
+        self.ib.sleep(2)  # Wait for data to populate
+
+        iv = None
+        if ticker_data.modelGreeks and ticker_data.modelGreeks.impliedVol is not None:
+            iv = ticker_data.modelGreeks.impliedVol
+
+        self.ib.cancelMktData(ticker_data)
+        return iv
+
+
+
+    def get_option_price(self, ticker: str, expiry: str, strike: float, right: str):
+        self.connect()
+        option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
+        option.multiplier = '100'
+        self.ib.qualifyContracts(option)
+
+        ticker_data = self.ib.reqMktData(option, '', False, False)
+        self.ib.sleep(2)  # Wait for the data to be returned
+
+        price = ticker_data.marketPrice()
+        self.ib.cancelMktData(ticker_data)  # Clean up by canceling market data
+        return price
+
+    def place_market_order(self, ticker: str, expiry: str, strike: float, right: str, quantity: int, action="BUY"):
+        self.connect()
+        option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
+        option.multiplier = '100'
+        self.ib.qualifyContracts(option)
+
+        order = Order(action=action, totalQuantity=quantity, orderType='MKT')
+        trade = self.ib.placeOrder(option, order)
+
+        self.ib.sleep(1)
+        return {
+            "status": trade.orderStatus.status,
+            "filled": trade.orderStatus.filled,
+            "avgFillPrice": trade.orderStatus.avgFillPrice
+        }
+
+    def get_current_price(self, ticker: str):
+        self.connect()
+        stock_contract = Stock(ticker, 'SMART', 'USD')
+        self.ib.qualifyContracts(stock_contract)
+
+        ticker_data = self.ib.reqMktData(stock_contract, '', False, False)
+        self.ib.sleep(2)  # Wait for the data to be returned
+
+        price = ticker_data.marketPrice()
+        self.ib.cancelMktData(ticker_data)  # Clean up by canceling market data
+        return price
+
+
+# Utility functions
 def determine_strike_distance(iv):
-    if iv < 40:
-        return 0.05  # +/- 5%
-    elif iv < 60:
-        return 0.10  # +/- 10%
-    elif iv < 80:
-        return 0.15  # +/- 15%
-    elif iv < 100:
-        return 0.20  # +/- 20%
+    if iv is None:
+        raise ValueError("Implied volatility is None")
+    if iv < 0.4:
+        return 0.05
+    elif iv < 0.6:
+        return 0.1
+    elif iv < 0.8:
+        return 0.2
+    elif iv < 1.0:
+        return 0.5
     else:
-        return 0.25  # +/- 25%
+        return 1.0
 
-# Fetch implied volatility using IBKR client
-def get_implied_volatility(ticker: str, expiry: str, strike: float, right: str):
-    """Wrapper function to start IBKR client and fetch implied volatility"""
-    ibkr_client = IBKRClient()
-    
-    # Connect to the IBKR TWS or IB Gateway (replace '127.0.0.1' with the correct IP if needed)
-    ibkr_client.connect("127.0.0.1", 7497, 0)
-    
-    # Start a new thread for the IBKR client to avoid blocking the main thread
-    client_thread = threading.Thread(target=ibkr_client.run)
-    client_thread.start()
-    
-    # Fetch implied volatility (this blocks until the data is returned)
-    iv = ibkr_client.get_implied_volatility(ticker, expiry, strike, right)
-    
-    # Disconnect after getting the data
-    ibkr_client.disconnect()
-    
-    # Return the implied volatility
-    return iv
+def determine_dte(iv):
+    if iv is None:
+        raise ValueError("Implied volatility is None")
+    if iv < 0.4:
+        return 7
+    elif iv < 0.6:
+        return 14
+    elif iv < 0.8:
+        return 21
+    else:
+        return 30
 
-# Main function to execute market buy
-def execute_market_buy(ticker: str, bias: str, short_data: Deque[Candlestick], last_candle: Candlestick):
+def calculate_contracts(entry_price):
+    return max(int(RISK_PER_TRADE / (entry_price * 100)), 1)
+
+def get_valid_option_strike_and_expiry(ib: IB, ticker: str, bias: str, base_strike: float):
+    stock_contract = Stock(ticker, 'SMART', 'USD')
+    ib.qualifyContracts(stock_contract)
+
+    chains = ib.reqSecDefOptParams(stock_contract.symbol, '', stock_contract.secType, stock_contract.conId)
+
+    if not chains:
+        raise ValueError(f"No option chain found for {ticker}")
+
+    chain = chains[0]
+    strikes = sorted([s for s in chain.strikes if 0 < s < 2000])
+    expirations = sorted(chain.expirations)
+
+    if not expirations:
+        raise ValueError(f"No expirations found for {ticker}")
+
+    expiry = min(expirations)
+
+    if bias == "Bullish":
+        strike = min((s for s in strikes if s >= base_strike), default=strikes[-1])
+    else:
+        strike = max((s for s in strikes if s <= base_strike), default=strikes[0])
+
+    return expiry, strike
+
+
+# Main execution function
+def execute_market_buy(ticker, bias, candle_data, last_candle):
     log("INFO", f"Executing MARKET BUY for {ticker} ({bias} bias)...")
+    ibkr = IBKRWrapper()
+    ib = ibkr.ib
 
-    # Determine OTM strike based on current IV bracket
-    iv = get_implied_volatility(ticker, "20230519", 150, "C")  # Example expiry and strike for calls
-    strike_distance = determine_strike_distance(iv)
+    try:
+        ibkr.connect()
+        base_price = ibkr.get_current_price(ticker)
+        expiry, strike = get_valid_option_strike_and_expiry(ib, ticker, bias, base_price)
 
-    # Fetch the OTM strike and ensure it's a valid option
-    option_strike = get_otm_strike(ticker, strike_distance, bias)
-    
-    # Ensure stop loss and take profit logic is handled based on candle data
-    stop_loss = calculate_stop_loss(last_candle, bias)
-    take_profit = calculate_take_profit(bias)
+        right = 'C' if bias == "Bullish" else 'P'
+        iv = ibkr.get_implied_volatility(ticker, expiry, strike, right)
+        log("INFO", f"Fetched IV: {iv}")
 
-    # Execute market buy for the selected option
-    buy_bot = buyBot()
-    buy_bot.place_option_order(ticker, option_strike, stop_loss, take_profit)
+        if iv is None:
+            log("ERROR", f"Could not fetch implied volatility for {ticker}, aborting.")
+            return
 
+        strike_distance = determine_strike_distance(iv)
+        dte = determine_dte(iv)
+        log("INFO", f"Strike Distance: {strike_distance}, DTE: {dte}")
 
-# Calculate stop loss based on previous candle
-def calculate_stop_loss(last_candle, bias):
-    if bias == "Bullish":
-        return last_candle.low  # For Calls: stop loss is previous candle's low
-    elif bias == "Bearish":
-        return last_candle.high  # For Puts: stop loss is previous candle's high
+        option_price = ibkr.get_option_price(ticker, expiry, strike, right)
+        log("INFO", f"Option Price: {option_price}")
 
-# Calculate take profit based on reversal pattern or wick breakout
-def calculate_take_profit(bias):
-    if bias == "Bullish":
-        return "Take Profit for Bullish"  # Define logic for take profit in your strategy
-    elif bias == "Bearish":
-        return "Take Profit for Bearish"  # Define logic for take profit in your strategy
+        if option_price is None:
+            log("ERROR", f"Could not retrieve option price for {ticker}, aborting.")
+            return
 
-# Placeholder for fetching the OTM option strike
-def get_otm_strike(ticker: str, strike_distance: float, bias: str):
-    current_price = get_current_price(ticker)
-    if bias == "Bullish":
-        return current_price * (1 + strike_distance)
-    else:
-        return current_price * (1 - strike_distance)
+        contracts = calculate_contracts(option_price)
+        log("INFO", f"Contracts to buy: {contracts}")
 
-# Placeholder for getting the current price of a ticker
-def get_current_price(ticker: str):
-    return 100  # Example price (this would need to be fetched from an API like IBKR)
+        trade_response = ibkr.place_market_order(ticker, expiry, strike, right, contracts)
+        log("INFO", f"Trade response: {trade_response}")
 
+    except ValueError as e:
+        log("ERROR", str(e))
+    finally:
+        ibkr.disconnect()

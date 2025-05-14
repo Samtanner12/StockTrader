@@ -48,7 +48,20 @@ if __name__ == "__main__":
     "CVNA",  # Carvana
     "ARKK",  # ARK Innovation ETF
     "SPY",   # S&P500 ETF (not volatile but a benchmark)
-    "QQQ",   # Nasdaq100 ETF
+    "QQQ",
+    "A",
+    "AA",
+    "AACB",
+    "AACG",
+    "AACT",
+    "AAL",
+    "AAM",
+    "AAME",
+    "AAMI",
+    "AAOI",
+    "AAON",
+    "AAP",
+    "AAPG"
     ]
 
 
