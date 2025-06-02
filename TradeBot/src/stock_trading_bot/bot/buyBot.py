@@ -4,6 +4,7 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 from datetime import datetime
 from ib_insync import IB, Stock, Option, util
+from ib_insync import MarketOrder
 
 # Constants
 RISK_PER_TRADE = 100
@@ -21,28 +22,47 @@ class IBKRWrapper:
         self.client_id = client_id
 
     def connect(self):
-        if not self.ib.isConnected():
-            self.ib.connect(self.host, self.port, self.client_id)
+        try:
+            if not self.ib.isConnected():
+                self.ib.connect(self.host, self.port, self.client_id)
+                log("INFO", "Connected to IBKR TWS/Gateway")
+        except Exception as e:
+            log("ERROR", f"Failed to connect: {e}")
+            raise
+
 
     def disconnect(self):
-        if self.ib.isConnected():
-            self.ib.disconnect()
+        try:
+            if self.ib.isConnected():
+                self.ib.disconnect()
+                log("INFO", "Disconnected from IBKR")
+        except Exception as e:
+            log("ERROR", f"Failed to disconnect: {e}")
+
 
     def get_implied_volatility(self, ticker: str, expiry: str, strike: float, right: str):
         self.connect()
         option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
-        self.ib.qualifyContracts(option)
+        option.multiplier = '100'
 
-        # Request Greeks data using genericTickList
-        ticker_data = self.ib.reqMktData(option, genericTickList='106', snapshot=False, regulatorySnapshot=False)
-        self.ib.sleep(2)  # Wait for data to populate
+        if not self.ib.qualifyContracts(option):
+            raise ValueError(f"Failed to qualify contract for {ticker} {expiry} {strike}{right}")
+
+        ticker_data = self.ib.reqMktData(option, genericTickList='106', snapshot=False)
+        self.ib.sleep(2)
 
         iv = None
-        if ticker_data.modelGreeks and ticker_data.modelGreeks.impliedVol is not None:
-            iv = ticker_data.modelGreeks.impliedVol
+        try:
+            if ticker_data.modelGreeks and ticker_data.modelGreeks.impliedVol is not None:
+                iv = ticker_data.modelGreeks.impliedVol
+        except Exception as e:
+            log("ERROR", f"Error reading implied volatility: {e}")
+        finally:
+            self.ib.cancelMktData(ticker_data)
 
-        self.ib.cancelMktData(ticker_data)
         return iv
+
+
 
 
 
@@ -50,25 +70,40 @@ class IBKRWrapper:
         self.connect()
         option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
         option.multiplier = '100'
-        self.ib.qualifyContracts(option)
+
+        if not self.ib.qualifyContracts(option):
+            raise ValueError(f"Failed to qualify option contract for {ticker}")
 
         ticker_data = self.ib.reqMktData(option, '', False, False)
-        self.ib.sleep(2)  # Wait for the data to be returned
+        self.ib.sleep(2)
 
-        price = ticker_data.marketPrice()
-        self.ib.cancelMktData(ticker_data)  # Clean up by canceling market data
+        try:
+            price = ticker_data.marketPrice()
+            if price is None or price <= 0:
+                raise ValueError("Invalid market price received.")
+        finally:
+            self.ib.cancelMktData(ticker_data)
+
         return price
+
 
     def place_market_order(self, ticker: str, expiry: str, strike: float, right: str, quantity: int, action="BUY"):
         self.connect()
         option = Option(ticker, expiry, strike, right, 'SMART', 'USD')
         option.multiplier = '100'
-        self.ib.qualifyContracts(option)
 
-        order = Order(action=action, totalQuantity=quantity, orderType='MKT')
+
+        if not self.ib.qualifyContracts(option):
+            raise ValueError(f"Failed to qualify option contract for {ticker}")
+
+        order = MarketOrder(action, quantity)
         trade = self.ib.placeOrder(option, order)
 
-        self.ib.sleep(1)
+        self.ib.sleep(2)
+
+        if not trade.orderStatus:
+            raise RuntimeError("Order status not received.")
+
         return {
             "status": trade.orderStatus.status,
             "filled": trade.orderStatus.filled,
@@ -78,13 +113,20 @@ class IBKRWrapper:
     def get_current_price(self, ticker: str):
         self.connect()
         stock_contract = Stock(ticker, 'SMART', 'USD')
-        self.ib.qualifyContracts(stock_contract)
+
+        if not self.ib.qualifyContracts(stock_contract):
+            raise ValueError(f"Failed to qualify stock contract for {ticker}")
 
         ticker_data = self.ib.reqMktData(stock_contract, '', False, False)
-        self.ib.sleep(2)  # Wait for the data to be returned
+        self.ib.sleep(2)
 
-        price = ticker_data.marketPrice()
-        self.ib.cancelMktData(ticker_data)  # Clean up by canceling market data
+        try:
+            price = ticker_data.marketPrice()
+            if price is None or price <= 0:
+                raise ValueError("Invalid current price received.")
+        finally:
+            self.ib.cancelMktData(ticker_data)
+
         return price
 
 

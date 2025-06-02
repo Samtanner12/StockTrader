@@ -4,11 +4,12 @@ from objects.Candlestick import Candlestick
 from bot.typeDefiner import TypeDefiner
 from bot.patternDefiner import PatternDefiner  # Import PatternDefiner
 from bot.entryBot import check_entry_signals
-
+from bot.monitorBot import mainCall
 
 from typing import Dict, Deque
 
 if __name__ == "__main__":
+    peak_prices = {}
     tickers = [
     "TSLA",  # Tesla
     "AMD",   # Advanced Micro Devices
@@ -64,42 +65,44 @@ if __name__ == "__main__":
     "AAPG"
     ]
 
+while True:
+        short_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="1200 S", bar_size="5 mins")
+        mid_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="3600 S", bar_size="15 mins")
+        long_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="7200 S", bar_size="30 mins")
 
-    short_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="1200 S", bar_size="5 mins")
-    mid_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="3600 S", bar_size="15 mins")
-    long_term_data: Dict[str, Deque[Candlestick]] = populate_candlestick_data(tickers, duration="7200 S", bar_size="30 mins")
 
+        # Classify candle types
+        TypeDefiner.define_types(short_term_data)
+        TypeDefiner.define_types(mid_term_data)
+        TypeDefiner.define_types(long_term_data)
 
-    # Classify candle types
-    TypeDefiner.define_types(short_term_data)
-    TypeDefiner.define_types(mid_term_data)
-    TypeDefiner.define_types(long_term_data)
+        # Define patterns based on candle types
+        PatternDefiner.define_patterns(short_term_data)
+        PatternDefiner.define_patterns(mid_term_data)
+        PatternDefiner.define_patterns(long_term_data)
 
-    # Define patterns based on candle types
-    PatternDefiner.define_patterns(short_term_data)
-    PatternDefiner.define_patterns(mid_term_data)
-    PatternDefiner.define_patterns(long_term_data)
+        # Output results
+        """   print("\n--- SHORT TERM (5-min chart) ---")
+        for ticker, candles in short_term_data.items():
+            print(f"\n{ticker}:")
+            for c in candles:
+                print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}")
 
-    # Output results
-    print("\n--- SHORT TERM (5-min chart) ---")
-    for ticker, candles in short_term_data.items():
-        print(f"\n{ticker}:")
-        for c in candles:
-            print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}")
+        print("\n--- MID TERM (15-min chart) ---")
+        for ticker, candles in mid_term_data.items():
+            print(f"\n{ticker}:")
+            for c in candles:
+                print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}")
 
-    print("\n--- MID TERM (15-min chart) ---")
-    for ticker, candles in mid_term_data.items():
-        print(f"\n{ticker}:")
-        for c in candles:
-            print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}")
+        print("\n--- LONG TERM (30-min chart) ---")
+        for ticker, candles in long_term_data.items():
+            print(f"\n{ticker}:")
+            for c in candles:
+                print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}") """
+                
 
-    print("\n--- LONG TERM (30-min chart) ---")
-    for ticker, candles in long_term_data.items():
-        print(f"\n{ticker}:")
-        for c in candles:
-            print(f"Time: {c.timestamp}, Type: {c.candleType}, Pattern: {c.candlePattern}")
-            
-
-# After printing patterns:
-    check_entry_signals(short_term_data, mid_term_data, long_term_data)
+    # After printing patterns:
+        check_entry_signals(short_term_data, mid_term_data, long_term_data)
+        mainCall(peak_prices)
+        
 
